@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>محاكاة طيران ثلاثية الأبعاد</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+        #gameCanvas {
+            width: 100%;
+            height: 100vh;
+            display: block;
+        }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 16px;
+            pointer-events: none;
+        }
+        #instructions {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            color: white;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 14px;
+            text-align: right;
+            pointer-events: none;
+        }
+        #collisionMessage {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: red;
+            font-size: 24px;
+            font-weight: bold;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 20px;
+            border-radius: 10px;
+            display: none;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <div id="ui">
+        <div>السرعة: <span id="speed">0</span> كم/س</div>
+        <div>الارتفاع: <span id="altitude">0</span> م</div>
+        <div>المسافة: <span id="distance">0</span> م</div>
+    </div>
+    <div id="instructions">
+        W/S: تسريع/تباطؤ<br>
+        A/D أو ←/→: دوران يسار/يمين<br>
+        ↑/↓: صعود/هبوط<br>
+        SPACE: تسوية المستوى
+    </div>
+    <div id="collisionMessage">اصطدام! اضغط على أي مفتاح للإعادة</div>
+
+    <!-- تحميل Three.js من CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
+    <script>
+        // إعداد اللعبة
+        let scene, camera, renderer;
+        let airplane, ground, obstacles = [];
+        let clock = new THREE.Clock();
+        
+        // حالة الطائرة
+        let state = {
+            velocity: new THREE.Vector3(0, 0, 0),
+            position: new THREE.Vector3(0, 10, 0),
+            rotation: new THREE.Euler(0, 0, 0),
+            throttle: 0, // 0-1
+            roll: 0, // زاوية الدوران
+            pitch: 0, // زاوية الميل للأمام/الخلف
+            altitude: 10,
+            speed: 0,
+            distance: 0,
+            isCrashed: false
+        };
+
+        // معلمات الفيزياء
+        const PHYSICS = {
+            maxSpeed: 150, // كم/س
+            acceleration: 5,
+            drag: 0.98,
+            lift: 0.05,
+            gravity: 0.2,
+            turnRate: 0.03,
+            pitchRate: 0.02,
+            rollRate: 0.05
+        };
+
+        // مفاتيح التحكم
+        const keys = {
+            w: false,
+            s: false,
+            a: false,
+            d: false,
+            arrowUp: false,
+            arrowDown: false,
+            arrowLeft: false,
+            arrowRight: false,
+            space: false
+        };
+
+        // تهيئة اللعبة
+        function init() {
+            // إنشاء المشهد
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB); // لون السماء
+
+            // إنشاء الكاميرا
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 15, -30);
+            camera.lookAt(0, 5, 0);
+
+            // إعداد المُصيِّر
+            renderer = new THREE.WebGLRenderer({
+                canvas: document.getElementById('gameCanvas'),
+                antialias: true
+            });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+
+            // إنشاء الطائرة
+            createAirplane();
+            
+            // إنشاء الأرض
+            createGround();
+            
+            // إنشاء العوائق
+            createObstacles();
+            
+            // إضافة إضاءة
+            addLighting();
+            
+            // إعداد مستمعات الأحداث
+            setupEventListeners();
+            
+            // بدء الحلقة الرئيسية
+            animate();
+        }
+
+        // إنشاء نموذج الطائرة
+        function createAirplane() {
+            airplane = new THREE.Group();
+            
+            // جسم الطائرة الرئيسي
+            const bodyGeometry = new THREE.CylinderGeometry(0.5, 0.3, 6, 8);
+            const bodyMaterial = new THREE.MeshLambertMaterial({ color: 0x1E90FF });
+            const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+            body.rotation.z = Math.PI / 2;
+            body.position.x = 0;
+            airplane.add(body);
+            
+            // الجناحان
+            const wingGeometry = new THREE.BoxGeometry(8, 0.2, 2);
+            const wingMaterial = new THREE.MeshLambertMaterial({ color: 0xFFFFFF });
+            const wings = new THREE.Mesh(wingGeometry, wingMaterial);
+            wings.position.y = -0.2;
+            wings.position.x = 0;
+            airplane.add(wings);
+            state.wings = wings; // للتحكم في زاوية الجناحين لاحقًا
+            
+            // الذيل الأفقي
+            const tailGeometry = new THREE.BoxGeometry(2, 0.1, 1);
+            const tailMaterial = new THREE.MeshLambertMaterial({ color: 0xFFFFFF });
+            const tail = new THREE.Mesh(tailGeometry, tailMaterial);
+            tail.position.x = -2.8;
+            tail.position.y = 0.5;
+            airplane.add(tail);
+            state.tail = tail;
+            
+            // الزعنفة الرأسية (الدفة)
+            const finGeometry = new THREE.BoxGeometry(0.1, 1.5, 1);
+            const finMaterial = new THREE.MeshLambertMaterial({ color: 0xFF4500 });
+            const fin = new THREE.Mesh(finGeometry, finMaterial);
+            fin.position.x = -2.8;
+            fin.position.y = 1;
+            airplane.add(fin);
+            state.fin = fin;
+            
+            // المروحة
+            const propellerGeometry = new THREE.CylinderGeometry(0.05, 0.05, 2, 8);
+            const propellerMaterial = new THREE.MeshLambertMaterial({ color: 0xAAAAAA });
+            const propeller = new THREE.Mesh(propellerGeometry, propellerMaterial);
+            propeller.rotation.z = Math.PI / 2;
+            propeller.position.x = 3.2;
+            airplane.add(propeller);
+            state.propeller = propeller;
+            
+            // شفرات المروحة
+            const bladeGeometry = new THREE.BoxGeometry(1.5, 0.05, 0.2);
+            const bladeMaterial = new THREE.MeshLambertMaterial({ color: 0x333333 });
+            const blade1 = new THREE.Mesh(bladeGeometry, bladeMaterial);
+            blade1.position.x = 3.2;
+            airplane.add(blade1);
+            state.blade1 = blade1;
+            
+            const blade2 = new THREE.Mesh(bladeGeometry, bladeMaterial);
+            blade2.position.x = 3.2;
+            blade2.rotation.z = Math.PI / 2;
+            airplane.add(blade2);
+            state.blade2 = blade2;
+            
+            // تعيين مركز الطائرة
+            airplane.position.copy(state.position);
+            airplane.rotation.copy(state.rotation);
+            
+            // إضافة الطائرة إلى المشهد
+            scene.add(airplane);
+        }
+
+        // إنشاء الأرض
+        function createGround() {
+            const groundGeometry = new THREE.PlaneGeometry(200, 200);
+            
+            // إنشاء ملمس أرضي بسيط
+            const groundTexture = new THREE.TextureLoader().load('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/Pc1SjwAAAABJRU5ErkJggg==');
+            groundTexture.wrapS = THREE.RepeatWrapping;
+            groundTexture.wrapT = THREE.RepeatWrapping;
+            groundTexture.repeat.set(20, 20);
+            
+            const groundMaterial = new THREE.MeshLambertMaterial({ 
+                color: 0x228B22,
+                map: groundTexture,
+                side: THREE.DoubleSide
+            });
+            
+            ground = new THREE.Mesh(groundGeometry, groundMaterial);
+            ground.rotation.x = -Math.PI / 2; // تدوير ليصبح أفقيًا
+            ground.receiveShadow = true;
+            scene.add(ground);
+        }
+
+        // إنشاء العوائق
+        function createObstacles() {
+            // إنشاء عدد عشوائي من العوائق
+            const obstacleCount = 30;
+            
+            for (let i = 0; i < obstacleCount; i++) {
+                // اختيار نوع عشوائي من العوائق
+                const type = Math.floor(Math.random() * 3);
+                let obstacle;
+                
+                if (type === 0) {
+                    // شجرة
+                    const trunkGeometry = new THREE.CylinderGeometry(0.3, 0.3, 2, 8);
+                    const trunkMaterial = new THREE.MeshLambertMaterial({ color: 0x8B4513 });
+                    const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+                    
+                    const leavesGeometry = new THREE.ConeGeometry(1.5, 3, 8);
+                    const leavesMaterial = new THREE.MeshLambertMaterial({ color: 0x006400 });
+                    const leaves = new THREE.Mesh(leavesGeometry, leavesMaterial);
+                    leaves.position.y = 2.5;
+                    
+                    obstacle = new THREE.Group();
+                    obstacle.add(trunk);
+                    obstacle.add(leaves);
+                    obstacle.scale.set(1, 1, 1);
+                } else if (type === 1) {
+                    // مبنى
+                    const buildingGeometry = new THREE.BoxGeometry(
+                        2 + Math.random() * 3, 
+                        5 + Math.random() * 10, 
+                        2 + Math.random() * 3
+                    );
+                    const buildingMaterial = new THREE.MeshLambertMaterial({ 
+                        color: Math.random() * 0xffffff 
+                    });
+                    obstacle = new THREE.Mesh(buildingGeometry, buildingMaterial);
+                } else {
+                    // صخرة
+                    const rockGeometry = new THREE.SphereGeometry(1 + Math.random(), 16, 16);
+                    const rockMaterial = new THREE.MeshLambertMaterial({ color: 0x696969 });
+                    obstacle = new THREE.Mesh(rockGeometry, rockMaterial);
+                }
+                
+                // تحديد موقع عشوائي
+                const x = -80 + Math.random() * 160;
+                const z = -20 + Math.random() * 100; // نضع العوائق أمام الطائرة
+                
+                obstacle.position.set(x, obstacle.geometry.parameters.height / 2 || 1, z);
+                obstacle.castShadow = true;
+                obstacle.receiveShadow = true;
+                
+                scene.add(obstacle);
+                obstacles.push(obstacle);
+            }
+        }
+
+        // إضافة الإضاءة
+        function addLighting() {
+            // ضوء محيط
+            const ambientLight = new THREE.AmbientLight(0x404040);
+            scene.add(ambientLight);
+            
+            // ضوء اتجاهي (مثل الشمس)
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(10, 20, 10);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 2048;
+            directionalLight.shadow.mapSize.height = 2048;
+            scene.add(directionalLight);
+        }
+
+        // إعداد مستمعات الأحداث
+        function setupEventListeners() {
+            // مستمعات لوحة المفاتيح
+            document.addEventListener('keydown', (event) => {
+                switch(event.key.toLowerCase()) {
+                    case 'w': keys.w = true; break;
+                    case 's': keys.s = true; break;
+                    case 'a': keys.a = true; break;
+                    case 'd': keys.d = true; break;
+                    case ' ': 
+                        keys.space = true;
+                        if (state.isCrashed) {
+                            resetGame();
+                        }
+                        break;
+                }
+                
+                switch(event.key) {
+                    case 'ArrowUp': keys.arrowUp = true; break;
+                    case 'ArrowDown': keys.arrowDown = true; break;
+                    case 'ArrowLeft': keys.arrowLeft = true; break;
+                    case 'ArrowRight': keys.arrowRight = true; break;
+                }
+            });
+            
+            document.addEventListener('keyup', (event) => {
+                switch(event.key.toLowerCase()) {
+                    case 'w': keys.w = false; break;
+                    case 's': keys.s = false; break;
+                    case 'a': keys.a = false; break;
+                    case 'd': keys.d = false; break;
+                    case ' ': keys.space = false; break;
+                }
+                
+                switch(event.key) {
+                    case 'ArrowUp': keys.arrowUp = false; break;
+                    case 'ArrowDown': keys.arrowDown = false; break;
+                    case 'ArrowLeft': keys.arrowLeft = false; break;
+                    case 'ArrowRight': keys.arrowRight = false; break;
+                }
+            });
+            
+            // إعادة تشكيل عند تغيير حجم النافذة
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+        }
+
+        // تحديث فيزياء الطائرة
+        function updatePhysics() {
+            if (state.isCrashed) return;
+            
+            const delta = Math.min(clock.getDelta(), 0.1);
+            
+            // التحكم بالوقود
+            if (keys.w) state.throttle = Math.min(state.throttle + 0.02, 1);
+            if (keys.s) state.throttle = Math.max(state.throttle - 0.02, 0);
+            
+            // التحكم بالدوران (Roll)
+            if (keys.a || keys.arrowLeft) {
+                state.roll -= PHYSICS.rollRate;
+            }
+            if (keys.d || keys.arrowRight) {
+                state.roll += PHYSICS.rollRate;
+            }
+            
+            // التحكم بالميل للأمام/الخلف (Pitch)
+            if (keys.arrowUp) {
+                state.pitch = Math.max(state.pitch - PHYSICS.pitchRate, -Math.PI/4);
+            }
+            if (keys.arrowDown) {
+                state.pitch = Math.min(state.pitch + PHYSICS.pitchRate, Math.PI/4);
+            }
+            
+            // تسوية المستوى
+            if (keys.space) {
+                state.roll *= 0.9;
+                state.pitch *= 0.9;
+            }
+            
+            // تطبيق الدوران على الطائرة
+            airplane.rotation.z = state.roll;
+            airplane.rotation.y = -state.velocity.x * 0.05; // دوران بسيط بناءً على الاتجاه
+            
+            // تحديث زاوية الجناحين والدفة
+            state.wings.rotation.z = state.roll * 0.5;
+            state.fin.rotation.z = state.roll * 0.3;
+            state.tail.rotation.x = state.pitch * 0.5;
+            
+            // تحديث المروحة
+            const propellerSpeed = state.throttle * 10;
+            state.propeller.rotation.x += propellerSpeed * delta;
+            state.blade1.rotation.x += propellerSpeed * delta;
+            state.blade2.rotation.x += propellerSpeed * delta;
+            
+            // حساب القوة الدافعة
+            const thrust = state.throttle * PHYSICS.acceleration;
+            
+            // تطبيق القوة في اتجاه الطائرة
+            const direction = new THREE.Vector3(0, 0, -1);
+            direction.applyEuler(airplane.rotation);
+            direction.normalize();
+            
+            state.velocity.add(direction.multiplyScalar(thrust * delta));
+            
+            // تطبيق السحب
+            state.velocity.multiplyScalar(PHYSICS.drag);
+            
+            // حساب الرفع بناءً على السرعة وزاوية الهجوم
+            const speed = state.velocity.length();
+            const lift = speed * speed * PHYSICS.lift * Math.cos(state.pitch);
+            
+            // تطبيق الرفع
+            if (speed > 1) {
+                const up = new THREE.Vector3(0, 1, 0);
+                up.applyQuaternion(airplane.quaternion);
+                state.velocity.add(up.multiplyScalar(lift * delta));
+            }
+            
+            // تطبيق الجاذبية
+            state.velocity.y -= PHYSICS.gravity;
+            
+            // تحديث الموقع
+            state.position.add(state.velocity.clone().multiplyScalar(delta));
+            
+            // منع الطائرة من الذهاب تحت الأرض
+            if (state.position.y < 1) {
+                state.position.y = 1;
+                if (state.velocity.y < 0) {
+                    state.velocity.y = 0;
+                }
+            }
+            
+            // تحديث ارتفاع الطائرة
+            state.altitude = state.position.y;
+            
+            // تحديث السرعة (تحويل إلى كم/س)
+            state.speed = Math.round(state.velocity.length() * 10);
+            
+            // تحديث المسافة المقطوعة
+            state.distance += speed * delta;
+            
+            // تحديث واجهة المستخدم
+            document.getElementById('speed').textContent = state.speed;
+            document.getElementById('altitude').textContent = Math.round(state.altitude);
+            document.getElementById('distance').textContent = Math.round(state.distance);
+            
+            // تحديث موقع الطائرة
+            airplane.position.copy(state.position);
+            
+            // التحقق من التصادمات
+            checkCollisions();
+        }
+
+        // التحقق من التصادمات
+        function checkCollisions() {
+            // التحقق من التصادم مع العوائق
+            for (let i = 0; i < obstacles.length; i++) {
+                const obstacle = obstacles[i];
+                const distance = state.position.distanceTo(obstacle.position);
+                
+                // تقدير حجم العائق
+                let obstacleSize = 2;
+                if (obstacle.geometry && obstacle.geometry.parameters) {
+                    if (obstacle.geometry.parameters.width) {
+                        obstacleSize = Math.max(
+                            obstacle.geometry.parameters.width,
+                            obstacle.geometry.parameters.height,
+                            obstacle.geometry.parameters.depth
+                        ) / 2;
+                    } else if (obstacle.geometry.parameters.radius) {
+                        obstacleSize = obstacle.geometry.parameters.radius;
+                    }
+                }
+                
+                // إذا كانت المسافة أقل من مجموع الأنصاف، هناك تصادم
+                if (distance < obstacleSize + 2) { // 2 هو نصف قطر تقريبي للطائرة
+                    handleCollision();
+                    return;
+                }
+            }
+        }
+
+        // معالجة التصادم
+        function handleCollision() {
+            if (state.isCrashed) return;
+            
+            state.isCrashed = true;
+            state.velocity.multiplyScalar(0.5); // تقليل السرعة
+            
+            // عرض رسالة التصادم
+            const collisionMessage = document.getElementById('collisionMessage');
+            collisionMessage.style.display = 'block';
+            
+            // إيقاف التحكم
+            keys.w = keys.s = keys.a = keys.d = false;
+            keys.arrowUp = keys.arrowDown = keys.arrowLeft = keys.arrowRight = false;
+        }
+
+        // إعادة تعيين اللعبة بعد التصادم
+        function resetGame() {
+            state.isCrashed = false;
+            state.position.set(0, 10, 0);
+            state.velocity.set(0, 0, 0);
+            state.rotation.set(0, 0, 0);
+            state.throttle = 0;
+            state.roll = 0;
+            state.pitch = 0;
+            state.altitude = 10;
+            state.speed = 0;
+            state.distance = 0;
+            
+            // إخفاء رسالة التصادم
+            document.getElementById('collisionMessage').style.display = 'none';
+        }
+
+        // تحديث الكاميرا
+        function updateCamera() {
+            if (state.isCrashed) return;
+            
+            // موقع الكاميرا خلف الطائرة قليلاً
+            const offset = new THREE.Vector3(0, 5, 15);
+            offset.applyQuaternion(airplane.quaternion);
+            offset.negate();
+            
+            const targetPosition = state.position.clone().add(offset);
+            
+            // تداخل سلس لحركة الكاميرا
+            camera.position.lerp(targetPosition, 0.1);
+            
+            // جعل الكاميرا تنظر إلى الطائرة
+            camera.lookAt(state.position);
+        }
+
+        // الحلقة الرئيسية للعبة
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            updatePhysics();
+            updateCamera();
+            
+            renderer.render(scene, camera);
+        }
+
+        // بدء اللعبة عند تحميل الصفحة
+        window.onload = init;
+    </script>
+</body>
+</html>
